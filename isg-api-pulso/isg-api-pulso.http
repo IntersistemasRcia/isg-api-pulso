@@ -1,0 +1,6 @@
+@isg_api_pulso_HostAddress = http://localhost:5178
+
+GET {{isg_api_pulso_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
