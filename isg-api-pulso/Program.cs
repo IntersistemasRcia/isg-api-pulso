@@ -167,6 +167,8 @@ builder.Services.AddSwaggerGen(c =>
     {
         { securityScheme, Array.Empty<string>() }
     });
+    // Add operation filter for request examples
+    c.OperationFilter<isg_api_pulso.Swagger.SwaggerExamplesOperationFilter>();
 });
 
 // Registrar servicio para ejecución segura de Stored Procedures

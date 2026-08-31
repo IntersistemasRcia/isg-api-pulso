@@ -26,12 +26,27 @@ namespace isg_api_pulso.Services
         /// <summary>
         /// Consulta sys.sql_modules para obtener nombre y código de los Stored Procedures que cumplen con el prefijo autorizado.
         /// </summary>
-        public async Task<IEnumerable<dynamic>> ListarSpArquitecturaAsync()
+        public async Task<IEnumerable<dynamic>> ListarSpArquitecturaAsync(bool includeSql = false)
         {
             string connectionString = _config.GetConnectionString("IsgApiPulsoDb")
                 ?? throw new InvalidOperationException("Cadena de conexión 'IsgApiPulsoDb' no configurada.");
 
-            const string sql = @"SELECT 
+            // Query parámetros por SP (sin devolver CodigoSQL por defecto)
+            const string sqlParams = @"
+SELECT
+    o.name AS NombreSP,
+    SUBSTRING(p.name,2,128) AS NombreParametro,
+    t.name AS TipoParametro,
+    p.is_output AS EsOutput,
+    p.has_default_value AS TieneDefault,
+    p.parameter_id AS Orden
+FROM sys.procedures o
+JOIN sys.parameters p ON p.object_id = o.object_id
+JOIN sys.types t ON p.user_type_id = t.user_type_id
+WHERE o.name LIKE 'sp_ISG_Vision_%'
+ORDER BY o.name, p.parameter_id;";
+
+            const string sqlWithCode = @"SELECT 
     o.name AS NombreSP,
     m.definition AS CodigoSQL
 FROM sys.sql_modules m
@@ -43,8 +58,36 @@ ORDER BY o.name;";
             try
             {
                 using IDbConnection db = new SqlConnection(connectionString);
-                var resultado = await db.QueryAsync(sql);
-                return resultado;
+                if (includeSql)
+                {
+                    var resultado = await db.QueryAsync(sqlWithCode);
+                    return resultado;
+                }
+
+                var rows = await db.QueryAsync(sqlParams);
+
+                // Agrupar por NombreSP y construir DTO ligero
+                var dict = new Dictionary<string, dynamic>(StringComparer.OrdinalIgnoreCase);
+                foreach (var r in rows)
+                {
+                    string sp = r.NombreSP;
+                    if (!dict.ContainsKey(sp))
+                    {
+                        dict[sp] = new {
+                            nombreSp = sp,
+                            parametros = new List<object>()
+                        };
+                    }
+
+                    dict[sp].parametros.Add(new {
+                        nombre = r.NombreParametro,
+                        tipo = r.TipoParametro,
+                        requerido = !(r.TieneDefault ?? false),
+                        esOutput = (r.EsOutput ?? false)
+                    });
+                }
+
+                return dict.Values;
             }
             catch (SqlException sqlEx)
             {

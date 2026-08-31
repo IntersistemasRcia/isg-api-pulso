@@ -27,11 +27,11 @@ namespace isg_api_pulso.Controllers
         /// Consulta internamente sys.sql_modules filtrando por 'sp_ISG_Vision_%'.
         /// </summary>
         [HttpGet("SPs_arquitectura")]
-        public async Task<IActionResult> ObtenerSpArquitectura()
+        public async Task<IActionResult> ObtenerSpArquitectura([FromQuery] bool includeSql = false)
         {
             try
             {
-                var resultado = await _ejecutorService.ListarSpArquitecturaAsync();
+                var resultado = await _ejecutorService.ListarSpArquitecturaAsync(includeSql);
                 return Ok(resultado);
             }
             catch (Exception ex)

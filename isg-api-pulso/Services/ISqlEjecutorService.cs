@@ -18,6 +18,6 @@ namespace isg_api_pulso.Services
         /// <summary>
         /// Lista la arquitectura de Stored Procedures autorizados (nombre y código SQL) consultando sys.sql_modules.
         /// </summary>
-        Task<IEnumerable<dynamic>> ListarSpArquitecturaAsync();
+        Task<IEnumerable<dynamic>> ListarSpArquitecturaAsync(bool includeSql = false);
     }
 }
