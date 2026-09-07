@@ -7,6 +7,8 @@ using System.Data;
 using System.Security;
 using System.Threading.Tasks;
 using System.Globalization;
+using System.Text.RegularExpressions;
+using isg_api_pulso.Models;
 
 namespace isg_api_pulso.Services
 {
@@ -26,65 +28,64 @@ namespace isg_api_pulso.Services
         /// <summary>
         /// Consulta sys.sql_modules para obtener nombre y código de los Stored Procedures que cumplen con el prefijo autorizado.
         /// </summary>
-        public async Task<IEnumerable<dynamic>> ListarSpArquitecturaAsync(bool includeSql = false)
+        public async Task<IEnumerable<SpArquitecturaDto>> ListarSpArquitecturaAsync(bool includeSql = false)
         {
             string connectionString = _config.GetConnectionString("IsgApiPulsoDb")
                 ?? throw new InvalidOperationException("Cadena de conexión 'IsgApiPulsoDb' no configurada.");
-
-            // Query parámetros por SP (sin devolver CodigoSQL por defecto)
-            const string sqlParams = @"
+            // Query que lista procedimientos, su definición (si existe) y parámetros (si existen)
+            const string sqlAll = @"
 SELECT
     o.name AS NombreSP,
-    SUBSTRING(p.name,2,128) AS NombreParametro,
+    m.definition AS CodigoSQL,
+    p.name AS NombreParametro,
     t.name AS TipoParametro,
     p.is_output AS EsOutput,
     p.has_default_value AS TieneDefault,
     p.parameter_id AS Orden
 FROM sys.procedures o
-JOIN sys.parameters p ON p.object_id = o.object_id
-JOIN sys.types t ON p.user_type_id = t.user_type_id
+LEFT JOIN sys.sql_modules m ON m.object_id = o.object_id
+LEFT JOIN sys.parameters p ON p.object_id = o.object_id
+LEFT JOIN sys.types t ON p.user_type_id = t.user_type_id
 WHERE o.name LIKE 'sp_ISG_Vision_%'
 ORDER BY o.name, p.parameter_id;";
-
-            const string sqlWithCode = @"SELECT 
-    o.name AS NombreSP,
-    m.definition AS CodigoSQL
-FROM sys.sql_modules m
-INNER JOIN sys.objects o ON m.object_id = o.object_id
-WHERE o.type = 'P' 
-  AND o.name LIKE 'sp_ISG_Vision_%'
-ORDER BY o.name;";
 
             try
             {
                 using IDbConnection db = new SqlConnection(connectionString);
-                if (includeSql)
-                {
-                    var resultado = await db.QueryAsync(sqlWithCode);
-                    return resultado;
-                }
 
-                var rows = await db.QueryAsync(sqlParams);
+                var rows = await db.QueryAsync(sqlAll);
 
-                // Agrupar por NombreSP y construir DTO ligero
-                var dict = new Dictionary<string, dynamic>(StringComparer.OrdinalIgnoreCase);
+                // Agrupar por NombreSP y construir DTO tipado
+                var dict = new Dictionary<string, SpArquitecturaDto>(StringComparer.OrdinalIgnoreCase);
                 foreach (var r in rows)
                 {
                     string sp = r.NombreSP;
                     if (!dict.ContainsKey(sp))
                     {
-                        dict[sp] = new {
-                            nombreSp = sp,
-                            parametros = new List<object>()
+                        string? codigo = r.CodigoSQL;
+                        dict[sp] = new SpArquitecturaDto
+                        {
+                            NombreSp = sp,
+                            Descripcion = TryExtractPulsoComment(codigo),
+                            Parametros = new List<ParametroDto>(),
+                            CodigoSQL = includeSql ? codigo : null
                         };
                     }
 
-                    dict[sp].parametros.Add(new {
-                        nombre = r.NombreParametro,
-                        tipo = r.TipoParametro,
-                        requerido = !(r.TieneDefault ?? false),
-                        esOutput = (r.EsOutput ?? false)
-                    });
+                    // Si tiene parámetro (puede ser null cuando el SP no tiene params)
+                    if (r.NombreParametro != null)
+                    {
+                        var nombreParam = r.NombreParametro as string ?? string.Empty;
+                        if (nombreParam.StartsWith("@")) nombreParam = nombreParam.Substring(1);
+
+                        dict[sp].Parametros.Add(new ParametroDto
+                        {
+                            Nombre = nombreParam,
+                            Tipo = r.TipoParametro,
+                            Requerido = !(r.TieneDefault ?? false),
+                            EsOutput = (r.EsOutput ?? false)
+                        });
+                    }
                 }
 
                 return dict.Values;
@@ -92,6 +93,37 @@ ORDER BY o.name;";
             catch (SqlException sqlEx)
             {
                 throw new InvalidOperationException("Error al consultar la arquitectura de Stored Procedures.", sqlEx);
+            }
+        }
+
+        private static string? TryExtractPulsoComment(string? definition)
+        {
+            if (string.IsNullOrWhiteSpace(definition)) return null;
+
+            try
+            {
+                // Buscar la primera línea que contenga el comentario '-- Pulso: ...' (case-insensitive)
+                var lines = definition.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                var rx = new Regex("^\\s*--\\s*Pulso\\s*:\\s*(.+)$", RegexOptions.IgnoreCase);
+
+                foreach (var line in lines)
+                {
+                    var m = rx.Match(line);
+                    if (m.Success)
+                    {
+                        var text = m.Groups[1].Value.Trim();
+                        if (string.IsNullOrEmpty(text)) return null;
+                        if (text.Length > 500) text = text.Substring(0, 500);
+                        return text;
+                    }
+                }
+
+                return null;
+            }
+            catch
+            {
+                // Nunca propagar la excepción desde el extractor; en caso de error devolver null
+                return null;
             }
         }
 
