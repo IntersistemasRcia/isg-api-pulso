@@ -57,12 +57,17 @@ ORDER BY o.name, p.parameter_id;";
 
                 // Agrupar por NombreSP y construir DTO tipado
                 var dict = new Dictionary<string, SpArquitecturaDto>(StringComparer.OrdinalIgnoreCase);
+                var defaultsMap = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
                 foreach (var r in rows)
                 {
                     string sp = r.NombreSP;
                     if (!dict.ContainsKey(sp))
                     {
                         string? codigo = r.CodigoSQL;
+                        // Analizar firma del SP en memoria para detectar parámetros con valor por defecto
+                        var defaults = ExtractParamsWithDefaultFromDefinition(codigo);
+                        defaultsMap[sp] = defaults;
+
                         dict[sp] = new SpArquitecturaDto
                         {
                             NombreSp = sp,
@@ -78,12 +83,18 @@ ORDER BY o.name, p.parameter_id;";
                         var nombreParam = r.NombreParametro as string ?? string.Empty;
                         if (nombreParam.StartsWith("@")) nombreParam = nombreParam.Substring(1);
 
+                        bool esOutput = (r.EsOutput ?? false);
+                        defaultsMap.TryGetValue(sp, out var defaultsForSp);
+                        bool tieneDefaultFromSql = defaultsForSp != null && defaultsForSp.Contains(nombreParam);
+                        bool tieneDefault = (r.TieneDefault ?? false) || tieneDefaultFromSql;
+
                         dict[sp].Parametros.Add(new ParametroDto
                         {
                             Nombre = nombreParam,
                             Tipo = r.TipoParametro,
-                            Requerido = !(r.TieneDefault ?? false),
-                            EsOutput = (r.EsOutput ?? false)
+                            TieneDefault = tieneDefault,
+                            Requerido = !tieneDefault && !esOutput,
+                            EsOutput = esOutput
                         });
                     }
                 }
@@ -124,6 +135,69 @@ ORDER BY o.name, p.parameter_id;";
             {
                 // Nunca propagar la excepción desde el extractor; en caso de error devolver null
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// Extrae los nombres de parámetros que en la firma del Stored Procedure declaran un valor por defecto.
+        /// Analiza el código entre CREATE/ALTER PROC ... y AS, eliminando comentarios simples y de bloque.
+        /// Retorna un conjunto de nombres de parámetros sin '@' en minúsculas.
+        /// </summary>
+        private static HashSet<string> ExtractParamsWithDefaultFromDefinition(string? definition)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(definition)) return result;
+
+            try
+            {
+                // Eliminar comentarios de bloque /* */ y comentarios de línea --
+                string noBlock = Regex.Replace(definition, @"/\*.*?\*/", string.Empty, RegexOptions.Singleline);
+                var lines = noBlock.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                var sb = new System.Text.StringBuilder();
+
+                foreach (var raw in lines)
+                {
+                    var line = raw;
+                    var idx = line.IndexOf("--");
+                    if (idx >= 0) line = line.Substring(0, idx);
+                    sb.AppendLine(line);
+                }
+
+                var cleaned = sb.ToString();
+
+                // Localizar inicio de la firma: CREATE PROCEDURE o ALTER PROCEDURE
+                var rxProc = new Regex("\\b(CREATE|ALTER)\\s+(PROCEDURE|PROC)\\b", RegexOptions.IgnoreCase);
+                var mProc = rxProc.Match(cleaned);
+                if (!mProc.Success) return result;
+
+                // Tomar texto desde el match hasta el primer occurrence de '\nAS\b' o '\\nBEGIN\\b' o '\nAS\s'
+                var after = cleaned.Substring(mProc.Index + mProc.Length);
+                var rxAs = new Regex("\\bAS\\b", RegexOptions.IgnoreCase);
+                var matchAs = rxAs.Match(after);
+                string signaturePart = matchAs.Success ? after.Substring(0, matchAs.Index) : after;
+
+                // Ahora buscar parámetros en la signaturePart: patrones como @ParamName Tipo ... = <valor>
+                var rxParam = new Regex("(@[A-Za-z0-9_]+)\\s+[A-Za-z0-9_()\\.]+(?:\\s*=[^,)]*)?", RegexOptions.IgnoreCase);
+                var rxDefault = new Regex("(@[A-Za-z0-9_]+)\\s+[A-Za-z0-9_()\\.]+\\s*=", RegexOptions.IgnoreCase);
+
+                foreach (Match m in rxParam.Matches(signaturePart))
+                {
+                    var name = m.Groups[1].Value;
+                    if (string.IsNullOrEmpty(name)) continue;
+                    // Determinar si tiene '=' después del tipo (es decir, default)
+                    if (rxDefault.IsMatch(m.Value))
+                    {
+                        var cleanName = name.StartsWith("@") ? name.Substring(1) : name;
+                        result.Add(cleanName);
+                    }
+                }
+
+                return result;
+            }
+            catch
+            {
+                // Nunca fallar el endpoint por errores en el parseo; simplemente no marcar defaults adicionales
+                return result;
             }
         }
 

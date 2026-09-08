@@ -20,6 +20,10 @@ namespace isg_api_pulso.Models
     {
         public string Nombre { get; set; } = string.Empty;
         public string? Tipo { get; set; }
+        // Indica si la firma del SP declara un valor por defecto para este parámetro
+        public bool TieneDefault { get; set; }
+
+        // Para parámetros de entrada: requerido = !TieneDefault
         public bool Requerido { get; set; }
         public bool EsOutput { get; set; }
     }
