@@ -189,11 +189,10 @@ var app = builder.Build();
 
 // Pipeline HTTP
 app.UseStaticFiles();
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+
+app.UseSwagger();
+app.UseSwaggerUI();
+
 
 app.UseCors("AllowLocalFront");
 app.UseAuthentication();
