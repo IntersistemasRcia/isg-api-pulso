@@ -9,6 +9,8 @@ using System.Threading.Tasks;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using isg_api_pulso.Models;
+using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 
 namespace isg_api_pulso.Services
 {
@@ -18,11 +20,13 @@ namespace isg_api_pulso.Services
     public class SqlEjecutorService : ISqlEjecutorService
     {
         private readonly IConfiguration _config;
+        private readonly ILogger<SqlEjecutorService> _logger;
         private const string PrefijoAutorizado = "sp_ISG_Vision_";
 
-        public SqlEjecutorService(IConfiguration config)
+        public SqlEjecutorService(IConfiguration config, ILogger<SqlEjecutorService> logger)
         {
             _config = config;
+            _logger = logger;
         }
 
         /// <summary>
@@ -296,8 +300,21 @@ ORDER BY o.name, p.parameter_id;";
                 await db.OpenAsync();
                 using var reader = await cmd.ExecuteReaderAsync(CommandBehavior.SequentialAccess);
 
+                // Cap de seguridad cuando no hay limiteFilas explícito
+                int maxSinLimite = 50000; // valor por defecto
+                var configured = _config["MaxFilasSinLimite"];
+                if (!string.IsNullOrWhiteSpace(configured) && int.TryParse(configured, out var cfgVal) && cfgVal > 0)
+                {
+                    maxSinLimite = cfgVal;
+                }
+
                 var rows = new List<Dictionary<string, object?>>(capacity: limiteFilas.HasValue ? Math.Min(256, Math.Max(16, limiteFilas.Value)) : 64);
                 int maxToRead = limiteFilas.HasValue && limiteFilas.Value > 0 ? (limiteFilas.Value + 1) : int.MaxValue;
+                if (!limiteFilas.HasValue)
+                {
+                    // si no hay limite, aplicamos el cap de seguridad
+                    maxToRead = Math.Min(maxToRead, maxSinLimite + 1);
+                }
                 int read = 0;
                 bool truncated = false;
                 while (read < maxToRead && await reader.ReadAsync())
@@ -346,9 +363,10 @@ ORDER BY o.name, p.parameter_id;";
                     else
                     {
                         // We truncated: try to get an exact count by running a lightweight second pass
+                        // Intentaremos hacer un conteo más barato sin materializar filas: ejecutar el SP y solo avanzar el reader para contar
+                        var sw = Stopwatch.StartNew();
                         try
                         {
-                            // Close previous reader/command and execute a counting pass
                             reader.Close();
                             reader.Dispose();
 
@@ -370,11 +388,16 @@ ORDER BY o.name, p.parameter_id;";
                                 counter++;
                             }
 
+                            sw.Stop();
+                            _logger.LogInformation("Conteo de filas para SP {sp} completado en {ms} ms, total={total}", nombreSanitizado, sw.ElapsedMilliseconds, counter);
+
                             totalRows = counter;
                             totalRowsExact = true;
                         }
-                        catch
+                        catch (Exception ex)
                         {
+                            sw.Stop();
+                            _logger.LogWarning(ex, "Conteo de filas falló para SP {sp} después de {ms} ms", nombreSanitizado, sw.ElapsedMilliseconds);
                             // Si falló el conteo, no mentimos: devolvemos el tamaño del lote y marcamos que no es exacto
                             totalRows = rows.Count;
                             totalRowsExact = false;

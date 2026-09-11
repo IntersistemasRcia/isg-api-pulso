@@ -101,7 +101,8 @@ namespace isg_api_pulso.Controllers
                     rows = resultado.Rows,
                     totalRows = resultado.TotalRows,
                     truncated = resultado.Truncated,
-                    limiteFilas = resultado.LimiteFilas
+                    limiteFilas = resultado.LimiteFilas,
+                    totalRowsExact = resultado.TotalRowsExact
                 });
             }
             catch (ArgumentException argEx)
