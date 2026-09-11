@@ -9,5 +9,7 @@ namespace isg_api_pulso.Models
         public int TotalRows { get; set; }
         public bool Truncated { get; set; }
         public int? LimiteFilas { get; set; }
+        // Indica si TotalRows es el conteo exacto del resultado (true) o un fallback/estimación (false)
+        public bool TotalRowsExact { get; set; }
     }
 }

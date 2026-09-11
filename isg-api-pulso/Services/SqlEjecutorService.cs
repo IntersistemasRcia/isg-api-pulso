@@ -319,17 +319,6 @@ ORDER BY o.name, p.parameter_id;";
                     truncated = true;
                 }
 
-                int totalRows;
-                if (!limiteFilas.HasValue)
-                {
-                    totalRows = rows.Count;
-                }
-                else
-                {
-                    if (truncated) totalRows = rows.Count; // rows includes the extra sentinel; represents at least rows.Count
-                    else totalRows = rows.Count;
-                }
-
                 // If we truncated, ensure we don't return the sentinel extra row beyond the limit
                 if (truncated && rows.Count > 0 && limiteFilas.HasValue && rows.Count > limiteFilas.Value)
                 {
@@ -337,12 +326,69 @@ ORDER BY o.name, p.parameter_id;";
                     rows.RemoveAt(rows.Count - 1);
                 }
 
+                int totalRows;
+                bool totalRowsExact = false;
+
+                if (!limiteFilas.HasValue)
+                {
+                    // No limit: we read everything, so count is exact
+                    totalRows = rows.Count;
+                    totalRowsExact = true;
+                }
+                else
+                {
+                    if (!truncated)
+                    {
+                        // Read less than or equal to the limit: exact
+                        totalRows = rows.Count;
+                        totalRowsExact = true;
+                    }
+                    else
+                    {
+                        // We truncated: try to get an exact count by running a lightweight second pass
+                        try
+                        {
+                            // Close previous reader/command and execute a counting pass
+                            reader.Close();
+                            reader.Dispose();
+
+                            using var cmdCount = db.CreateCommand();
+                            cmdCount.CommandText = nombreSanitizado;
+                            cmdCount.CommandType = CommandType.StoredProcedure;
+                            foreach (var kv in paramList)
+                            {
+                                var p = cmdCount.CreateParameter();
+                                p.ParameterName = "@" + kv.Key;
+                                p.Value = kv.Value ?? DBNull.Value;
+                                cmdCount.Parameters.Add(p);
+                            }
+
+                            using var readerCount = await cmdCount.ExecuteReaderAsync(CommandBehavior.SequentialAccess);
+                            int counter = 0;
+                            while (await readerCount.ReadAsync())
+                            {
+                                counter++;
+                            }
+
+                            totalRows = counter;
+                            totalRowsExact = true;
+                        }
+                        catch
+                        {
+                            // Si falló el conteo, no mentimos: devolvemos el tamaño del lote y marcamos que no es exacto
+                            totalRows = rows.Count;
+                            totalRowsExact = false;
+                        }
+                    }
+                }
+
                 var result = new isg_api_pulso.Models.EjecutarSpResultDto
                 {
                     Rows = rows,
-                    TotalRows = truncated ? (rows.Count + 1) : rows.Count,
+                    TotalRows = totalRows,
                     Truncated = truncated,
-                    LimiteFilas = limiteFilas
+                    LimiteFilas = limiteFilas,
+                    TotalRowsExact = totalRowsExact
                 };
 
                 return result;
