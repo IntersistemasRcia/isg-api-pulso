@@ -51,7 +51,7 @@ ORDER BY o.name, p.parameter_id;";
 
             try
             {
-                using IDbConnection db = new SqlConnection(connectionString);
+                using var db = new SqlConnection(connectionString);
 
                 var rows = await db.QueryAsync(sqlAll);
 
@@ -201,7 +201,7 @@ ORDER BY o.name, p.parameter_id;";
             }
         }
 
-        public async Task<IEnumerable<dynamic>> EjecutarSpAsync(string nombreSp, Dictionary<string, object>? parametros = null)
+        public async Task<isg_api_pulso.Models.EjecutarSpResultDto> EjecutarSpAsync(string nombreSp, Dictionary<string, object>? parametros = null, int? limiteFilas = null)
         {
             if (string.IsNullOrWhiteSpace(nombreSp))
                 throw new ArgumentException("El nombre del Stored Procedure no puede estar vacío.", nameof(nombreSp));
@@ -221,10 +221,11 @@ ORDER BY o.name, p.parameter_id;";
 
             try
             {
-                using IDbConnection db = new SqlConnection(connectionString);
+                using var db = new SqlConnection(connectionString);
 
                 // Preparar parámetros de forma segura usando DynamicParameters
                 DynamicParameters dp = new DynamicParameters();
+                var paramList = new List<KeyValuePair<string, object?>>();
                 if (parametros != null)
                 {
                     foreach (var kvp in parametros)
@@ -242,42 +243,109 @@ ORDER BY o.name, p.parameter_id;";
                         if (valorNormalizado is DateTime dt)
                         {
                             dp.Add(paramName, dt, dbType: DbType.Date);
+                            paramList.Add(new KeyValuePair<string, object?>(paramName, dt));
                         }
                         else if (valorNormalizado is int i)
                         {
                             dp.Add(paramName, i, dbType: DbType.Int32);
+                            paramList.Add(new KeyValuePair<string, object?>(paramName, i));
                         }
                         else if (valorNormalizado is long l)
                         {
                             dp.Add(paramName, l, dbType: DbType.Int64);
+                            paramList.Add(new KeyValuePair<string, object?>(paramName, l));
                         }
                         else if (valorNormalizado is double d)
                         {
                             dp.Add(paramName, d, dbType: DbType.Double);
+                            paramList.Add(new KeyValuePair<string, object?>(paramName, d));
                         }
                         else if (valorNormalizado is bool b)
                         {
                             dp.Add(paramName, b, dbType: DbType.Boolean);
+                            paramList.Add(new KeyValuePair<string, object?>(paramName, b));
                         }
                         else if (valorNormalizado == null)
                         {
                             dp.Add(paramName, null);
+                            paramList.Add(new KeyValuePair<string, object?>(paramName, null));
                         }
                         else
                         {
                             dp.Add(paramName, valorNormalizado);
+                            paramList.Add(new KeyValuePair<string, object?>(paramName, valorNormalizado));
                         }
                     }
                 }
 
                 // Ejecutar el SP de forma segura con Dapper
-                var resultado = await db.QueryAsync(
-                    nombreSanitizado,
-                    dp,
-                    commandType: CommandType.StoredProcedure
-                );
+                // Usaremos CommandBehavior.SequentialAccess para evitar bufferizar todo en memoria
+                using var cmd = db.CreateCommand();
+                cmd.CommandText = nombreSanitizado;
+                cmd.CommandType = CommandType.StoredProcedure;
 
-                return resultado;
+                // Añadir parámetros al DbCommand desde la lista paramList
+                foreach (var kv in paramList)
+                {
+                    var p = cmd.CreateParameter();
+                    p.ParameterName = "@" + kv.Key;
+                    p.Value = kv.Value ?? DBNull.Value;
+                    cmd.Parameters.Add(p);
+                }
+
+                await db.OpenAsync();
+                using var reader = await cmd.ExecuteReaderAsync(CommandBehavior.SequentialAccess);
+
+                var rows = new List<Dictionary<string, object?>>(capacity: limiteFilas.HasValue ? Math.Min(256, Math.Max(16, limiteFilas.Value)) : 64);
+                int maxToRead = limiteFilas.HasValue && limiteFilas.Value > 0 ? (limiteFilas.Value + 1) : int.MaxValue;
+                int read = 0;
+                bool truncated = false;
+                while (read < maxToRead && await reader.ReadAsync())
+                {
+                    var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                    for (int i = 0; i < reader.FieldCount; i++)
+                    {
+                        var name = reader.GetName(i);
+                        var val = await reader.IsDBNullAsync(i) ? null : reader.GetValue(i);
+                        row[name] = val;
+                    }
+                    rows.Add(row);
+                    read++;
+                }
+
+                if (limiteFilas.HasValue && limiteFilas.Value > 0 && read == maxToRead)
+                {
+                    // Tenemos una fila extra que indica que hay más datos
+                    truncated = true;
+                }
+
+                int totalRows;
+                if (!limiteFilas.HasValue)
+                {
+                    totalRows = rows.Count;
+                }
+                else
+                {
+                    if (truncated) totalRows = rows.Count; // rows includes the extra sentinel; represents at least rows.Count
+                    else totalRows = rows.Count;
+                }
+
+                // If we truncated, ensure we don't return the sentinel extra row beyond the limit
+                if (truncated && rows.Count > 0 && limiteFilas.HasValue && rows.Count > limiteFilas.Value)
+                {
+                    // remove last element (the sentinel)
+                    rows.RemoveAt(rows.Count - 1);
+                }
+
+                var result = new isg_api_pulso.Models.EjecutarSpResultDto
+                {
+                    Rows = rows,
+                    TotalRows = truncated ? (rows.Count + 1) : rows.Count,
+                    Truncated = truncated,
+                    LimiteFilas = limiteFilas
+                };
+
+                return result;
             }
             catch (SqlException sqlEx)
             {

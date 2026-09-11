@@ -95,8 +95,14 @@ namespace isg_api_pulso.Controllers
                     }
                 }
 
-                var resultado = await _ejecutorService.EjecutarSpAsync(peticion.NombreSp, parametros);
-                return Ok(resultado);
+                var resultado = await _ejecutorService.EjecutarSpAsync(peticion.NombreSp, parametros, peticion.LimiteFilas);
+                return Ok(new {
+                    ok = true,
+                    rows = resultado.Rows,
+                    totalRows = resultado.TotalRows,
+                    truncated = resultado.Truncated,
+                    limiteFilas = resultado.LimiteFilas
+                });
             }
             catch (ArgumentException argEx)
             {
@@ -122,5 +128,8 @@ namespace isg_api_pulso.Controllers
 
         // Parámetros opcionales para el SP.
         public Dictionary<string, object>? Parametros { get; set; }
+
+        // Opcional: limitar el número de filas devueltas (null = sin límite)
+        public int? LimiteFilas { get; set; }
     }
 }
