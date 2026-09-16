@@ -117,23 +117,56 @@ ORDER BY o.name, p.parameter_id;";
 
             try
             {
-                // Buscar la primera línea que contenga el comentario '-- Pulso: ...' (case-insensitive)
-                var lines = definition.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                var rx = new Regex("^\\s*--\\s*Pulso\\s*:\\s*(.+)$", RegexOptions.IgnoreCase);
+                // 1) Preferir bloque multilínea que comience con "/*-- Pulso:" (ignore case)
+                var prefix = "/*-- Pulso:";
+                int idx = definition.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
+                string? content = null;
 
-                foreach (var line in lines)
+                if (idx >= 0)
                 {
-                    var m = rx.Match(line);
-                    if (m.Success)
+                    // buscar cierre '*/' después del prefijo
+                    int start = idx + prefix.Length;
+                    int end = definition.IndexOf("*/", start, StringComparison.Ordinal);
+                    if (end > start)
                     {
-                        var text = m.Groups[1].Value.Trim();
-                        if (string.IsNullOrEmpty(text)) return null;
-                        if (text.Length > 500) text = text.Substring(0, 500);
-                        return text;
+                        content = definition.Substring(start, end - start);
                     }
                 }
 
-                return null;
+                // 2) Si no encontramos bloque válido, fallback a línea '-- Pulso: ...'
+                if (content == null)
+                {
+                    var lines = definition.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var raw in lines)
+                    {
+                        var line = raw.TrimStart();
+                        if (line.StartsWith("-- Pulso:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            content = line.Substring("-- Pulso:".Length);
+                            break;
+                        }
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(content)) return null;
+
+                // Normalizar: trim y colapsar whitespace (secuencias de \s+ a espacio simple)
+                var collapsed = Regex.Replace(content.Trim(), "\\s+", " ");
+                if (string.IsNullOrWhiteSpace(collapsed)) return null;
+
+                // Truncar a 1000 chars, preferentemente sin cortar palabra
+                const int maxLen = 1000;
+                if (collapsed.Length <= maxLen) return collapsed;
+
+                // intentar cortar en el último whitespace antes del límite
+                int cut = collapsed.LastIndexOfAny(new char[] { ' ', '\t', '\r', '\n' }, maxLen - 1);
+                if (cut > 0)
+                {
+                    return collapsed.Substring(0, cut);
+                }
+
+                // fallback: hard truncate
+                return collapsed.Substring(0, maxLen);
             }
             catch
             {
