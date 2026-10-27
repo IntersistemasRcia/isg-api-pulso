@@ -154,8 +154,8 @@ ORDER BY o.name, p.parameter_id;";
                 var collapsed = Regex.Replace(content.Trim(), "\\s+", " ");
                 if (string.IsNullOrWhiteSpace(collapsed)) return null;
 
-                // Truncar a 1000 chars, preferentemente sin cortar palabra
-                const int maxLen = 1000;
+                // Truncar a 3000 chars, preferentemente sin cortar palabra
+                const int maxLen = 3000;
                 if (collapsed.Length <= maxLen) return collapsed;
 
                 // intentar cortar en el último whitespace antes del límite
